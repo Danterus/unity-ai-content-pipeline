@@ -1,5 +1,5 @@
 {
-  "name": "com.dragongaze.ai-content-pipeline",
+  "name": "com.danterus.ai-content-pipeline",
   "version": "1.0.0",
   "displayName": "AI Content Pipeline (Groq + ComfyUI)",
   "description": "Editor tool for automated RPG item and icon generation via LLM and Stable Diffusion.",

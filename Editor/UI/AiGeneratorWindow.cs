@@ -1,8 +1,10 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using AIPipeline.Runtime;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace AIPipeline.Editor
 {
@@ -11,13 +13,20 @@ namespace AIPipeline.Editor
         private const string PrefKeyGroqApi = "AIPipeline_GroqApiKey";
         private const string PrefKeyGroqModel = "AIPipeline_GroqModel";
         private const string PrefKeyComfyUrl = "AIPipeline_ComfyUrl";
-        private const string PrefKeyUseComfy = "AIPipeline_UseComfy";
+        private const string PrefKeyImageBackend = "AIPipeline_ImageBackend";
         private const string PrefKeyOutputFolder = "AIPipeline_OutputFolder";
 
+        public enum ImageBackendType
+        {
+            LocalComfyUI = 0,
+            CloudFluxPollinations = 1,
+            ProceduralMock = 2
+        }
+
         private string _groqApiKey = "";
-        private string _groqModel = "llama-3.3-70b-versatile";
+        private string _groqModel = "openai/gpt-oss-120b";
         private string _comfyUrl = "http://127.0.0.1:8188";
-        private bool _useComfyUI = false;
+        private ImageBackendType _imageBackend = ImageBackendType.CloudFluxPollinations;
         private TextAsset _workflowJsonAsset;
         private string _outputFolder = "Assets/GeneratedItems";
 
@@ -30,15 +39,15 @@ namespace AIPipeline.Editor
         public static void ShowWindow()
         {
             var window = GetWindow<AiGeneratorWindow>("AI Item Generator");
-            window.minSize = new Vector2(420, 560);
+            window.minSize = new Vector2(440, 600);
         }
 
         private void OnEnable()
         {
             _groqApiKey = EditorPrefs.GetString(PrefKeyGroqApi, "");
-            _groqModel = EditorPrefs.GetString(PrefKeyGroqModel, "llama-3.3-70b-versatile");
+            _groqModel = EditorPrefs.GetString(PrefKeyGroqModel, "openai/gpt-oss-120b");
             _comfyUrl = EditorPrefs.GetString(PrefKeyComfyUrl, "http://127.0.0.1:8188");
-            _useComfyUI = EditorPrefs.GetBool(PrefKeyUseComfy, false);
+            _imageBackend = (ImageBackendType)EditorPrefs.GetInt(PrefKeyImageBackend, (int)ImageBackendType.CloudFluxPollinations);
             _outputFolder = EditorPrefs.GetString(PrefKeyOutputFolder, "Assets/GeneratedItems");
         }
 
@@ -47,7 +56,7 @@ namespace AIPipeline.Editor
             EditorPrefs.SetString(PrefKeyGroqApi, _groqApiKey);
             EditorPrefs.SetString(PrefKeyGroqModel, _groqModel);
             EditorPrefs.SetString(PrefKeyComfyUrl, _comfyUrl);
-            EditorPrefs.SetBool(PrefKeyUseComfy, _useComfyUI);
+            EditorPrefs.SetInt(PrefKeyImageBackend, (int)_imageBackend);
             EditorPrefs.SetString(PrefKeyOutputFolder, _outputFolder);
         }
 
@@ -56,38 +65,44 @@ namespace AIPipeline.Editor
             _scrollPos = EditorGUILayout.BeginScrollView(_scrollPos);
 
             EditorGUILayout.Space(6);
-            EditorGUILayout.LabelField("AI Content Pipeline (Groq + ComfyUI)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("API keys are stored locally in EditorPrefs and are never committed to version control.", MessageType.Info);
+            EditorGUILayout.LabelField("AI Content Pipeline (Groq + Multi-Backend)", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox("API keys are securely stored locally in EditorPrefs.", MessageType.Info);
 
             EditorGUI.BeginChangeCheck();
 
+            // --- Блок 1: Настройки LLM (Groq) ---
             EditorGUILayout.Space(4);
             EditorGUILayout.LabelField("1. LLM Settings (Groq API)", EditorStyles.boldLabel);
             _groqApiKey = EditorGUILayout.PasswordField("Groq API Key (gsk_...)", _groqApiKey);
             _groqModel = EditorGUILayout.TextField("Model ID", _groqModel);
 
-            // --- Блок 2: Настройки генерации иконок (ComfyUI + Fallback) ---
+            // --- Блок 2: Выбор бэкенда для иконок ---
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("2. Icon Generation (ComfyUI / Fallback)", EditorStyles.boldLabel);
-            _useComfyUI = EditorGUILayout.Toggle("Use Local ComfyUI", _useComfyUI);
+            EditorGUILayout.LabelField("2. Icon Generation Backend", EditorStyles.boldLabel);
+            _imageBackend = (ImageBackendType)EditorGUILayout.EnumPopup("Backend Mode", _imageBackend);
 
-            if (_useComfyUI)
+            if (_imageBackend == ImageBackendType.LocalComfyUI)
             {
                 _comfyUrl = EditorGUILayout.TextField("ComfyUI Endpoint", _comfyUrl);
                 _workflowJsonAsset = (TextAsset)EditorGUILayout.ObjectField(
                     "API Workflow JSON", _workflowJsonAsset, typeof(TextAsset), false);
-                EditorGUILayout.HelpBox("If ComfyUI is unreachable, the tool will automatically fall back to procedural rarity icons.", MessageType.None);
+                EditorGUILayout.HelpBox("Requires local ComfyUI running. If unavailable, tool will fall back to procedural icons.", MessageType.Warning);
+            }
+            else if (_imageBackend == ImageBackendType.CloudFluxPollinations)
+            {
+                EditorGUILayout.HelpBox("Blazing fast cloud generation via Pollinations (Flux model). Zero VRAM usage, no API keys required.", MessageType.Info);
             }
             else
             {
-                EditorGUILayout.HelpBox("Mock Mode Active: Procedural gradient icons will be generated based on item rarity (zero VRAM required).", MessageType.None);
+                EditorGUILayout.HelpBox("Mock Mode: Instant procedural gradient icons based on item rarity.", MessageType.None);
             }
 
+            // --- Блок 3: Промпты и пакетный режим ---
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("3. Batch Prompts (1 line = 1 item)", EditorStyles.boldLabel);
             _outputFolder = EditorGUILayout.TextField("Output Folder", _outputFolder);
 
-            EditorGUILayout.LabelField("Enter item concepts (Russian or English):");
+            EditorGUILayout.LabelField("Enter item concepts:");
             _promptsInput = EditorGUILayout.TextArea(_promptsInput, GUILayout.Height(85));
 
             if (EditorGUI.EndChangeCheck())
@@ -98,7 +113,7 @@ namespace AIPipeline.Editor
             EditorGUILayout.Space(10);
 
             GUI.enabled = !_isGenerating && !string.IsNullOrWhiteSpace(_groqApiKey);
-            if (GUILayout.Button(_isGenerating ? "Generating..." : "Generate Items Batch", GUILayout.Height(36)))
+            if (GUILayout.Button(_isGenerating ? "Generating..." : "Generate Items Batch", GUILayout.Height(38)))
             {
                 RunBatchGenerationAsync();
             }
@@ -106,9 +121,10 @@ namespace AIPipeline.Editor
 
             if (string.IsNullOrWhiteSpace(_groqApiKey))
             {
-                EditorGUILayout.HelpBox("Please enter your free Groq API Key (gsk_...) above to enable generation.", MessageType.Warning);
+                EditorGUILayout.HelpBox("Please enter your free Groq API Key (gsk_...) above.", MessageType.Warning);
             }
 
+            // --- Блок 4: Предпросмотр ---
             if (_lastGeneratedItem != null)
             {
                 EditorGUILayout.Space(12);
@@ -141,7 +157,7 @@ namespace AIPipeline.Editor
             var cts = new CancellationTokenSource();
 
             var textProvider = new GroqTextProvider(_groqApiKey.Trim(), _groqModel.Trim());
-            var imageProvider = new ComfyUIImageProvider(_comfyUrl.Trim());
+            var comfyProvider = new ComfyUIImageProvider(_comfyUrl.Trim());
 
             try
             {
@@ -151,10 +167,7 @@ namespace AIPipeline.Editor
                     if (string.IsNullOrEmpty(prompt)) continue;
 
                     float progress = (float)i / lines.Length;
-                    if (EditorUtility.DisplayCancelableProgressBar(
-                        "AI Content Pipeline",
-                        $"[{i + 1}/{lines.Length}] Generating JSON via Groq: {prompt}...",
-                        progress))
+                    if (EditorUtility.DisplayCancelableProgressBar("AI Content Pipeline", $"[{i + 1}/{lines.Length}] Groq JSON generation...", progress))
                     {
                         cts.Cancel();
                         break;
@@ -163,25 +176,27 @@ namespace AIPipeline.Editor
                     ItemGenerationDto dto = await textProvider.GenerateItemJsonAsync(prompt, cts.Token);
 
                     byte[] iconBytes = null;
-                    if (_useComfyUI && _workflowJsonAsset != null)
-                    {
-                        if (EditorUtility.DisplayCancelableProgressBar(
-                            "AI Content Pipeline",
-                            $"[{i + 1}/{lines.Length}] Rendering icon in ComfyUI: {dto.itemName}...",
-                            progress + (0.5f / lines.Length)))
-                        {
-                            cts.Cancel();
-                            break;
-                        }
 
+                    if (_imageBackend == ImageBackendType.LocalComfyUI && _workflowJsonAsset != null)
+                    {
                         try
                         {
-                            iconBytes = await imageProvider.GenerateIconBytesAsync(
-                                _workflowJsonAsset.text, dto.sdIconPrompt, cts.Token);
+                            iconBytes = await comfyProvider.GenerateIconBytesAsync(_workflowJsonAsset.text, dto.sdIconPrompt, cts.Token);
                         }
-                        catch (Exception comfyEx)
+                        catch (Exception ex)
                         {
-                            Debug.LogWarning($"[AI Pipeline] ComfyUI unavailable ({comfyEx.Message}). Using procedural fallback icon.");
+                            Debug.LogWarning($"[AI Pipeline] ComfyUI failed ({ex.Message}). Falling back to procedural icon.");
+                        }
+                    }
+                    else if (_imageBackend == ImageBackendType.CloudFluxPollinations)
+                    {
+                        try
+                        {
+                            iconBytes = await DownloadIconFromPollinationsAsync(dto.sdIconPrompt, 512, cts.Token);
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.LogWarning($"[AI Pipeline] Pollinations cloud failed ({ex.Message}). Falling back to procedural icon.");
                         }
                     }
 
@@ -194,11 +209,11 @@ namespace AIPipeline.Editor
                     Repaint();
                 }
 
-                Debug.Log($"[AI Pipeline] Successfully generated batch in '{_outputFolder}'.");
+                Debug.Log($"[AI Pipeline] Batch successfully generated in '{_outputFolder}'.");
             }
             catch (OperationCanceledException)
             {
-                Debug.LogWarning("[AI Pipeline] Batch generation cancelled by user.");
+                Debug.LogWarning("[AI Pipeline] Generation cancelled.");
             }
             catch (Exception ex)
             {
@@ -213,7 +228,27 @@ namespace AIPipeline.Editor
                 Repaint();
             }
         }
-        
+
+        private static async Task<byte[]> DownloadIconFromPollinationsAsync(string prompt, int size = 512, CancellationToken ct = default)
+        {
+            int seed = UnityEngine.Random.Range(1, 999999);
+            string encodedPrompt = UnityWebRequest.EscapeURL($"{prompt}, 2d game icon, centered, clean background");
+            string url = $"https://image.pollinations.ai/prompt/{encodedPrompt}?width={size}&height={size}&seed={seed}&nologo=true&model=flux";
+
+            using var req = UnityWebRequest.Get(url);
+            var op = req.SendWebRequest();
+            while (!op.isDone)
+            {
+                if (ct.IsCancellationRequested) { req.Abort(); ct.ThrowIfCancellationRequested(); }
+                await Task.Delay(50, ct);
+            }
+
+            if (req.result != UnityWebRequest.Result.Success)
+                throw new Exception($"Pollinations error: {req.error}");
+
+            return req.downloadHandler.data;
+        }
+
         private static byte[] GenerateProceduralFallbackIcon(string rarity, int size = 256)
         {
             Color baseColor = (rarity?.ToLowerInvariant()) switch
